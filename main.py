@@ -36,6 +36,7 @@ BLOCK_SIZE = 8192
 
 # magic
 SHARED_MAGIC = 322420958
+REQUEST_MAGIC = 1364349014
 
 # secrets
 # secret used to decrypt system update files (not app updates)
@@ -116,8 +117,6 @@ def pack_img(directory: str) -> bool:
     return p.returncode == 0
 
 class UpdateRequestFile(object):
-    DNA_MAGIC = 1364349014
-
     dna = None
     serial = None
     signature = None
@@ -156,7 +155,7 @@ class UpdateRequestFile(object):
         signer = PKCS1_v1_5.new(RSA_PRV_KEY)
 
         # not sure what the data on the end is but whatever, it works :3
-        array = pack("<i", self.DNA_MAGIC) + self.dna + (b"\x00" * 8) + b"\x07"
+        array = pack("<i", REQUEST_MAGIC) + self.dna + (b"\x00" * 8) + b"\x07"
         self.signature = signer.sign(SHA1.new(array))
 
         dec_data = array + self.signature
@@ -178,7 +177,7 @@ class UpdateRequestFile(object):
         array = dec_data[:-RSA_PRV_BYTES]  # UNIQUE_MAGIC + DNA
         self.signature = dec_data[-RSA_PRV_BYTES:]
 
-        assert unpack("<i", array[:4])[0] == self.DNA_MAGIC, "Invalid magic"
+        assert unpack("<i", array[:4])[0] == REQUEST_MAGIC, "Invalid magic"
 
         verifier = PKCS1_v1_5.new(RSA_PRV_KEY)
         assert verifier.verify(SHA1.new(array), self.signature), "Invalid signature"
