@@ -349,10 +349,6 @@ class SystemUpdateFile(object):
                 assert unpack_img(join(directory, single.name)), "Error unpacking system image"
 
 if __name__ == "__main__":
-    # create output directory
-    if not isdir(OUTPUT_DIR):
-        mkdir(OUTPUT_DIR)
-
     # parse or generate update request
     update_request = UpdateRequestFile()
 
@@ -367,8 +363,10 @@ if __name__ == "__main__":
     DEBUG = args.debug
 
     assert args.in_file is not None and isfile(args.in_file), "The specified input file doesn't exist"
-    if args.extract:
-        assert isdir(args.out_dir), "The specified output directory doesn't exist"
+
+    # create output directory
+    if not isdir(args.out_dir):
+        mkdir(args.out_dir)
 
     # parse and dump system update file
     with open(args.in_file, "rb") as f:
