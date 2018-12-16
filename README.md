@@ -31,3 +31,6 @@ optional arguments:
   -e, --extract         Extract files from the update package
   -d, --debug           Print debug info
 ```
+
+##### Credits:
+> [RedScoripoXDA](https://forum.xda-developers.com/member.php?u=4582467) for [imgRePackerRK](https://forum.xda-developers.com/showthread.php?t=2257331)
