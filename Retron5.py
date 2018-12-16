@@ -349,15 +349,14 @@ class SystemUpdateFile(object):
                 assert unpack_img(join(directory, single.name)), "Error unpacking system image"
 
 if __name__ == "__main__":
-    # parse or generate update request
-    update_request = UpdateRequestFile()
-
+    # create argument parser
     parser = ArgumentParser(description="A script to make unpacking and packing Retron 5 updates easier (or actually possible)")
     parser.add_argument("-i", "--in-file", type=str, help="The update file you want to unpack")
     parser.add_argument("-o", "--out-dir", type=str, default=OUTPUT_DIR, help="The directory you want to extract the update to")
     parser.add_argument("-l", "--list", action="store_true", help="List files in the update package")
     parser.add_argument("-e", "--extract", action="store_true", help="Extract files from the update package")
     parser.add_argument("-d", "--debug", action="store_true", help="Print debug info")
+    # parse args
     args = parser.parse_args()
 
     DEBUG = args.debug
@@ -367,6 +366,9 @@ if __name__ == "__main__":
     # create output directory
     if not isdir(args.out_dir):
         mkdir(args.out_dir)
+
+    # create or read update request
+    update_request = UpdateRequestFile()
 
     # parse and dump system update file
     with open(args.in_file, "rb") as f:
