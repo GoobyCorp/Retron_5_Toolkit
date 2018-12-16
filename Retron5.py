@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 
+__author__ = "Visual Studio"
+__description__ = "A script to make unpacking and packing Retron 5 updates easier (or actually possible)"
+
 import os
 import subprocess
 from io import BytesIO
 from tarfile import TarFile
 from bz2 import BZ2Decompressor
 from math import floor, log, pow
+from argparse import ArgumentParser
 from os import mkdir, rename, urandom, remove
 from os.path import isdir, isfile, join, basename
 from binascii import hexlify as _hexlify, unhexlify
 
-# my library
+# included in the repo
 from StreamIO import *
 
 # pip install pycryptodomex
@@ -286,12 +290,11 @@ class SystemUpdateFile(object):
         self.update_files: list = []
         self.verifier: PKCS1_v1_5 = None
 
-    def list_files(self) -> list:
-        if DEBUG:
-            print(">>> " + self.stream.name)
-            for single in self.update_files:
-                print("+ %s @ %s, %s (%s unpadded)" % (single.name, hex(single.offset), convert_size(single.size_pad), convert_size(single.size_nopad)))
-        return [x.name for x in self.update_files]
+    def list_files(self) -> None:
+        #if DEBUG:
+        print(">>> " + self.stream.name)
+        for single in self.update_files:
+            print("+ %s @ %s, %s (%s unpadded)" % (single.name, hex(single.offset), convert_size(single.size_pad), convert_size(single.size_nopad)))
 
     def extract_files(self, directory: str = OUTPUT_DIR) -> None:
         for single in self.update_files:
@@ -353,16 +356,26 @@ if __name__ == "__main__":
     # parse or generate update request
     update_request = UpdateRequestFile()
 
-    # parse and dump system update file
-    #if isfile(SYSTEM_IMG_FILE):
-    #    with open(SYSTEM_IMG_FILE, "rb") as f:
-    #        with SystemUpdateFile(f, update_request.dna) as su:
-    #            su.list_files()
-    #            su.extract_files()
+    parser = ArgumentParser(description="A script to make unpacking and packing Retron 5 updates easier (or actually possible)")
+    parser.add_argument("-i", "--in-file", type=str, help="The update file you want to unpack")
+    parser.add_argument("-o", "--out-dir", type=str, default=OUTPUT_DIR, help="The directory you want to extract the update to")
+    parser.add_argument("-l", "--list", action="store_true", help="List files in the update package")
+    parser.add_argument("-e", "--extract", action="store_true", help="Extract files from the update package")
+    parser.add_argument("-d", "--debug", action="store_true", help="Print debug info")
+    args = parser.parse_args()
 
-    # parse and dump app update file
-    #if isfile(UPDATE_BIN_FILE):
-    #    with open(UPDATE_BIN_FILE, "rb") as f:
-    #        with SystemUpdateFile(f, update_request.dna) as su:
-    #            su.list_files()
-    #            su.extract_files()
+    DEBUG = args.debug
+
+    assert args.in_file is not None and isfile(args.in_file), "The specified input file doesn't exist"
+    if args.extract:
+        assert isdir(args.out_dir), "The specified output directory doesn't exist"
+
+    # parse and dump system update file
+    with open(args.in_file, "rb") as f:
+        with SystemUpdateFile(f, update_request.dna) as su:
+            if args.list:
+                print("Listing files...")
+                su.list_files()
+            if args.extract:
+                print("Extracting files...")
+                su.extract_files()
