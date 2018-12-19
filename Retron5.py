@@ -21,6 +21,7 @@ from StreamIO.StreamIO import *
 from Cryptodome.Cipher import AES
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Hash import SHA1, MD5
+from Cryptodome.Util.strxor import strxor
 from Cryptodome.Signature import PKCS1_v1_5
 from Cryptodome.Util.Padding import pad, unpad
 
@@ -269,8 +270,7 @@ class SystemUpdateFile(object):
                     file.unique = sio.read_int() & 1 != 0
                     key = bytearray(sio.read(16))
                     if file.unique and dna is not None:  # this is only used if it's a console-unique file
-                        for y in range(len(key)):
-                            key[y] ^= self.dna_hash[y]
+                        key = strxor(key, self.dna_hash)
                     file.key = key
                     file.iv = sio.read(16)
                     file.signature = sio.read(RSA_PUB_BYTES)
