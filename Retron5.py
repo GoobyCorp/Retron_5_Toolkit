@@ -15,7 +15,7 @@ from os.path import isdir, isfile, join, basename
 from binascii import hexlify as _hexlify, unhexlify
 
 # included in the repo
-from StreamIO import *
+from StreamIO.StreamIO import *
 
 # pip install pycryptodomex
 from Cryptodome.Cipher import AES
