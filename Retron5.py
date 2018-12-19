@@ -260,10 +260,9 @@ class SystemUpdateFile(object):
                 assert self.verifier.verify(SHA1.new(record_dec[:-RSA_PUB_BYTES]), signature), "Invalid signature"
                 sio.seek(16)
                 for x in range(file_count):
-                    bArr2 = sio.read(80)
                     file = UpdateFile()
-                    file.valid = False
-                    file.name = bArr2.split(b"\x00")[0].decode("utf8")
+                    file.valid = False  # probably not going to check this ever
+                    file.name = sio.read(80).split(b"\x00")[0].decode("utf8")  # max file name size is 80 bytes
                     file.offset = sio.read_int()
                     file.size_nopad = sio.read_int()
                     file.size_pad = sio.read_int()
@@ -303,7 +302,7 @@ class SystemUpdateFile(object):
             hasher = SHA1.new()
             bz2 = BZ2Decompressor()
             read = 0
-            with open(join(directory, single.name), "wb") as f0:
+            with open(join(directory, single.name), "wb") as f:
                 while read < single.size_pad:
                     # calculate the exact size of the read
                     amt = (single.size_pad - read) if (single.size_pad - read) < BLOCK_SIZE else BLOCK_SIZE
@@ -321,7 +320,7 @@ class SystemUpdateFile(object):
                     if single.name.endswith(".bz2"):
                         dec_buff = bz2.decompress(dec_buff)
                     # output to file
-                    f0.write(dec_buff)
+                    f.write(dec_buff)
                     read += len(enc_buff)
                 assert self.verifier.verify(hasher, single.signature), "Invalid signature"
             # rename the .bz2 files because they're already decompressed
