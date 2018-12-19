@@ -285,10 +285,10 @@ class SystemUpdateFile(object):
 
     def reset(self) -> None:
         self.stream = None
-        self.dna_hash: (bytes, bytearray) = None
-        self.h: int = None
-        self.update_files: list = []
-        self.verifier: PKCS1_v1_5 = None
+        self.dna_hash = None
+        self.h = None
+        self.update_files = []
+        self.verifier = None
 
     def list_files(self) -> None:
         #if DEBUG:
