@@ -39,8 +39,8 @@ PRIVATE_KEY_FILE = "prv_key.pem"
 BLOCK_SIZE = 8192
 
 # magic
-SHARED_MAGIC = 322420958
-REQUEST_MAGIC = 1364349014
+SHARED_MAGIC = unhexlify("dec03713")
+REQUEST_MAGIC = unhexlify("56505251")
 
 # secrets
 # secret used to decrypt system update files (not app updates)
@@ -159,7 +159,7 @@ class UpdateRequestFile(object):
         signer = PKCS1_v1_5.new(RSA_PRV_KEY)
 
         # not sure what the data on the end is but whatever, it works :3
-        array = pack("<i", REQUEST_MAGIC) + self.dna + (b"\x00" * 8) + b"\x07"
+        array = REQUEST_MAGIC + self.dna + (b"\x00" * 8) + b"\x07"
         self.signature = signer.sign(SHA1.new(array))
 
         dec_data = array + self.signature
@@ -181,12 +181,12 @@ class UpdateRequestFile(object):
         array = dec_data[:-RSA_PRV_BYTES]  # UNIQUE_MAGIC + DNA
         self.signature = dec_data[-RSA_PRV_BYTES:]
 
-        assert unpack("<i", array[:4])[0] == REQUEST_MAGIC, "Invalid magic"
+        assert array[:4] == REQUEST_MAGIC, "Invalid magic"
 
         verifier = PKCS1_v1_5.new(RSA_PRV_KEY)
         assert verifier.verify(SHA1.new(array), self.signature), "Invalid signature"
 
-        self.dna = array[4:11]
+        self.dna = array[4:11] # the rest is pointless
         self.serial = hexlify(self.dna).upper()
 
 class UpdateFile(object):
@@ -215,7 +215,6 @@ class UpdateFile(object):
 class SystemUpdateFile(object):
     stream = None
     dna_hash: (bytes, bytearray) = None
-    h: int = None
     update_files: list = []
     verifier: PKCS1_v1_5 = None
 
@@ -232,34 +231,35 @@ class SystemUpdateFile(object):
         iv = self.stream.read(16)
         cipher = AES.new(SYSTEM_SECRET, AES.MODE_CBC, iv)
 
-        bArr3 = self.stream.read(16)
-        bArr3 = cipher.decrypt(bArr3)
+        header_enc = self.stream.read(16)
+        header_dec = cipher.decrypt(header_enc)
 
-        with BytesIO(bArr3) as bio:
+        with BytesIO(header_dec) as bio:
             with StreamIO(bio) as sio:
-                i = sio.read_int()
-                i2 = sio.read_int()
-                i3 = sio.read_int()
-                self.h = sio.read_int()
-                if i != SHARED_MAGIC:
-                    raise Exception()
-                elif i2 > 1:
-                    raise Exception()
+                magic = sio.read(4)
+                version = sio.read_int()
+                file_count = sio.read_int()
+                sio.seek(4, SEEK_CUR)  # this is unused
+                if magic != SHARED_MAGIC:
+                    raise Exception("Invalid update magic")
+                elif version > 1:
+                    raise Exception("Invalid update version")
                 else:
-                    i = ((i3 * 256) + 16) + RSA_PUB_BYTES
+                    record_size = ((file_count * 256) + 16) + RSA_PUB_BYTES
                     self.stream.seek(16)
-                    bArr3 = self.stream.read(i)
+                    record_enc = self.stream.read(record_size)
                     # re-init
                     cipher = AES.new(SYSTEM_SECRET, AES.MODE_CBC, iv)
-                    decrypted = cipher.decrypt(bArr3)
-        with BytesIO(decrypted) as bio:
+                    record_dec = cipher.decrypt(record_enc)
+        with BytesIO(record_dec) as bio:
             with StreamIO(bio) as sio:
-                if sio.read_int() != SHARED_MAGIC:
-                    raise Exception()
-                signature = decrypted[-RSA_PUB_BYTES:]
-                assert self.verifier.verify(SHA1.new(decrypted[:-RSA_PUB_BYTES]), signature), "Invalid signature"
+                magic = sio.read(4)
+                if magic != SHARED_MAGIC:
+                    raise Exception("Invalid update magic")
+                signature = record_dec[-RSA_PUB_BYTES:]
+                assert self.verifier.verify(SHA1.new(record_dec[:-RSA_PUB_BYTES]), signature), "Invalid signature"
                 sio.seek(16)
-                for i4 in range(i3):
+                for x in range(file_count):
                     bArr2 = sio.read(80)
                     file = UpdateFile()
                     file.valid = False
@@ -270,8 +270,8 @@ class SystemUpdateFile(object):
                     file.unique = sio.read_int() & 1 != 0
                     key = bytearray(sio.read(16))
                     if file.unique and dna is not None:  # this is only used if it's a console-unique file
-                        for i5 in range(len(key)):
-                            key[i5] ^= self.dna_hash[i5]
+                        for y in range(len(key)):
+                            key[y] ^= self.dna_hash[y]
                     file.key = key
                     file.iv = sio.read(16)
                     file.signature = sio.read(RSA_PUB_BYTES)
