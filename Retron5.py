@@ -5,8 +5,10 @@ __description__ = "A script to make unpacking and packing Retron 5 updates easie
 
 import os
 import subprocess
+from ctypes import *
 from io import BytesIO
 from tarfile import TarFile
+from datetime import datetime
 from bz2 import BZ2Decompressor
 from math import floor, log, pow
 from argparse import ArgumentParser
@@ -18,9 +20,9 @@ from binascii import hexlify as _hexlify, unhexlify
 from StreamIO.StreamIO import *
 
 # pip install pycryptodomex
-from Cryptodome.Cipher import AES
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Hash import SHA1, MD5
+from Cryptodome.Cipher import AES, ARC4
 from Cryptodome.Util.strxor import strxor
 from Cryptodome.Signature import PKCS1_v1_5
 from Cryptodome.Util.Padding import pad, unpad
@@ -42,12 +44,16 @@ BLOCK_SIZE = 8192
 # magic
 SHARED_MAGIC = unhexlify("dec03713")
 REQUEST_MAGIC = unhexlify("56505251")
+RKFW_MAGIC = b"RKFW"
+RKFW_BOOT_MAGIC = b"BOOT"
 
 # secrets
 # secret used to decrypt system update files (not app updates)
 SYSTEM_SECRET = unhexlify("8704bc739081954c06411f6d8e531c37")
 # used to encrypt console's DNA (serial #) for generating update requests
 REQUEST_SECRET = unhexlify("9d7a196d7c461eb558ce9d2a29bc5d08")
+# RockChip RC4 key
+RKFW_KEY = unhexlify("7c4e0304550509072d2c7b38170d1711")
 
 # this is used to verify system updates
 assert isfile(PUBLIC_KEY_FILE), "Public key doesn't exist"
@@ -63,6 +69,124 @@ with open(PRIVATE_KEY_FILE, "r") as f:
 RSA_PRV_BITS = RSA_PRV_KEY.size_in_bits()
 RSA_PRV_BYTES = RSA_PRV_KEY.size_in_bytes()
 
+# enums
+class RKFW_ChipID(IntEnum):
+    RK3066 = 0x60
+    RK3188 = 0x70
+
+class RKFW_Type(IntEnum):
+    UPDATE = 0
+    RKAF = 1
+
+# structures
+class RKFW_Header(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 4),
+        ("HdrLen", c_uint16),
+        ("Version", c_uint32),
+        ("Code", c_uint32),
+        ("Year", c_uint16),
+        ("Month", c_uint8),
+        ("Day", c_uint8),
+        ("Hour", c_uint8),
+        ("Minute", c_uint8),
+        ("Second", c_uint8),
+        ("ChipID", c_uint32),
+        ("LoadOff", c_uint32),
+        ("LoadLen", c_uint32),
+        ("DataOff", c_uint32),
+        ("DataLen", c_uint32),
+        ("Unk0", c_uint32),
+        ("Type", c_uint32),
+        ("SysFStype", c_uint32),
+        ("BackupEnd", c_uint32),
+        ("Reserved", c_ubyte * 45)
+    ]
+
+class StageRec(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("RecType", c_uint8),
+        ("RecOff", c_uint32),
+        ("RecLen", c_uint8),
+    ]
+
+class RKBoot_Header(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 4),
+        ("HdrLen", c_uint16),
+        ("Version", c_uint32),
+        ("Code", c_uint32),
+        ("Year", c_uint16),
+        ("Month", c_uint8),
+        ("Day", c_uint8),
+        ("Hour", c_uint8),
+        ("Minute", c_uint8),
+        ("Second", c_uint8),
+        ("ChipID", c_uint32),
+        ("StageRecs", StageRec * 4),
+        ("Reserved", c_ubyte * 53)
+    ]
+
+class RKBootFileRec(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("FileRecLen", c_uint8),
+        ("FileNum", c_uint32),
+        ("FileName", c_wchar * 20),
+        ("FileOff", c_uint32),
+        ("FileSize", c_uint32),
+        ("Unk0", c_uint32)
+    ]
+
+class UpdFile(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Name", c_byte * 32),
+        ("FileName", c_byte * 60),
+        ("NandSize", c_uint32),
+        ("Offset", c_uint32),
+        ("NandAddr", c_uint32),
+        ("ImgFSize", c_uint32),
+        ("OrigFSize", c_uint32),
+    ]
+
+class RKAF_Header(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 4),
+        ("ImgLen", c_uint32),
+        ("Model", c_byte * 34),
+        ("ID", c_byte * 30),
+        ("Manufacturer", c_byte * 56),
+        ("Unk0", c_uint32),
+        ("Version", c_uint32),
+        ("FileCount", c_uint32),
+        ("UpdFiles", UpdFile * 16),
+        ("Reserved", c_ubyte * 116)
+    ]
+
+class PARM_File(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 4),
+        ("FileLen", c_uint32)
+        # File
+        # CRC
+    ]
+
+class KRNL_File(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 4),
+        ("FileLen", c_uint32)
+        # File
+        # CRC
+    ]
+
+# functions
 def hexlify(b: (bytes, bytearray)) -> str:
     return _hexlify(b).decode("utf8")
 
@@ -120,6 +244,86 @@ def pack_img(directory: str) -> bool:
     p.stdout.close()
     p.wait()
     return p.returncode == 0
+
+class RKFW(object):
+    stream = None
+    package_build_datetime: datetime = None
+    boot_build_datetime: datetime = None
+
+    def __init__(self, filename: str) -> None:
+        self.reset()
+        assert isfile(filename), "Specified RKFW image file doesn't exist"
+        self.stream = open(filename, "rb")
+        self.stream = StreamIO(self.stream)
+        self.read_header()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stream.close()
+
+    def read_header(self) -> None:
+        # read package header
+        fw_hdr = self.stream.read_struct(RKFW_Header)
+
+        # make sure it's a valid package
+        assert bytes(fw_hdr.Magic) == RKFW_MAGIC, "Invalid RockChip firmware package magic"
+        assert fw_hdr.ChipID == RKFW_ChipID.RK3066, "Invalid RockChip ID"
+        self.package_build_datetime = datetime(fw_hdr.Year, fw_hdr.Month, fw_hdr.Day, fw_hdr.Hour, fw_hdr.Minute, fw_hdr.Second)
+
+        boot_img_base = self.stream.tell()
+        rk_boot_hdr = self.stream.read_struct(RKBoot_Header)
+        assert bytes(rk_boot_hdr.Magic) == RKFW_BOOT_MAGIC, "Invalid RockChip boot magic"
+        assert rk_boot_hdr.ChipID == RKFW_ChipID.RK3066, "Invalid RockChip ID"
+        self.boot_build_datetime = datetime(rk_boot_hdr.Year, rk_boot_hdr.Month, rk_boot_hdr.Day, rk_boot_hdr.Hour, rk_boot_hdr.Minute, rk_boot_hdr.Second)
+
+        total_size = sizeof(RKBoot_Header)
+        for x in range(4):  # 4 files
+            file_rec = self.stream.read_struct(RKBootFileRec)
+            temp = self.stream.tell()  # store the location of the last record
+            self.stream.seek(boot_img_base + file_rec.FileOff)
+
+            total_size += file_rec.FileSize + sizeof(RKBootFileRec)
+
+            file_data_enc = self.stream.read(file_rec.FileSize)
+            self.stream.seek(temp)  # seek back to the end of the last record
+            file_data_dec = ARC4.new(RKFW_KEY).decrypt(file_data_enc)
+
+            # write the file to disk
+            with open(join("test", file_rec.FileName), "wb") as f:
+                f.write(file_data_dec)
+
+        # write the boot image to a file
+        self.stream.seek(boot_img_base)
+        with open(join("test", "boot.bin"), "wb") as f:
+            f.write(self.stream.read(total_size + 4))
+
+        if RKFW_Type(fw_hdr.Type) == RKFW_Type.RKAF:
+            rkaf_base = self.stream.tell()
+            rkaf_hdr = self.stream.read_struct(RKAF_Header)
+            for single in rkaf_hdr.UpdFiles:
+                #print(bytes(single.Name).rstrip(b"\x00"))
+                file_name = str(bytes(single.FileName).rstrip(b"\x00"), "utf8")
+                if len(file_name) > 0:
+                    print(file_name)
+                    self.stream.seek(rkaf_base + single.Offset)
+                    file_data = self.stream.read(single.OrigFSize)
+                    if file_name == "parameter":
+                        file_data = file_data[sizeof(PARM_File):-4]
+                        parm_crc = unpack("<I", file_data[-4:])[0]
+                    if file_name not in ["RESERVED"]:
+                        with open(join("test", file_name), "wb") as f:
+                            f.write(file_data)
+        elif RKFW_Type(fw_hdr.Type) == RKFW_Type.UPDATE:
+            pass
+        else:
+            raise Exception("Invalid RKFW type")
+
+    def reset(self) -> None:
+        self.stream = None
+        self.package_build_datetime: datetime = None
+        self.boot_build_datetime: datetime = None
 
 class UpdateRequestFile(object):
     dna = None
@@ -370,6 +574,7 @@ if __name__ == "__main__":
     update_request = UpdateRequestFile()
 
     # parse and dump system update file
+    """
     with open(args.in_file, "rb") as f:
         with SystemUpdateFile(f, update_request.dna) as su:
             if args.list:
@@ -378,3 +583,6 @@ if __name__ == "__main__":
             if args.extract:
                 print("Extracting files...")
                 su.extract_files()
+    """
+    with RKFW("output/update.img") as fw:
+        pass
