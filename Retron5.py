@@ -272,6 +272,16 @@ class RKFW(object):
         assert fw_hdr.ChipID == RKFW_ChipID.RK3066, "Invalid RockChip ID"
         self.package_build_datetime = datetime(fw_hdr.Year, fw_hdr.Month, fw_hdr.Day, fw_hdr.Hour, fw_hdr.Minute, fw_hdr.Second)
 
+        self.read_boot()
+
+        if RKFW_Type(fw_hdr.Type) == RKFW_Type.RKAF:
+            self.read_rkaf()
+        elif RKFW_Type(fw_hdr.Type) == RKFW_Type.UPDATE:
+            pass
+        else:
+            raise Exception("Invalid RKFW type")
+
+    def read_boot(self) -> None:
         boot_img_base = self.stream.tell()
         rk_boot_hdr = self.stream.read_struct(RKBoot_Header)
         assert bytes(rk_boot_hdr.Magic) == RKFW_BOOT_MAGIC, "Invalid RockChip boot magic"
@@ -280,45 +290,48 @@ class RKFW(object):
 
         total_size = sizeof(RKBoot_Header)
         for x in range(4):  # 4 files
+            # read the file record
             file_rec = self.stream.read_struct(RKBootFileRec)
-            temp = self.stream.tell()  # store the location of the last record
+            # store the location of the last record
+            temp = self.stream.tell()
+            # seek to the file's data
             self.stream.seek(boot_img_base + file_rec.FileOff)
-
+            # increment the total boot file size
             total_size += file_rec.FileSize + sizeof(RKBootFileRec)
-
+            # read the encrypt file data
             file_data_enc = self.stream.read(file_rec.FileSize)
-            self.stream.seek(temp)  # seek back to the end of the last record
+            # seek back to the end of the last record
+            self.stream.seek(temp)
+            # decrypt the file
             file_data_dec = ARC4.new(RKFW_KEY).decrypt(file_data_enc)
-
             # write the file to disk
             with open(join("test", file_rec.FileName), "wb") as f:
                 f.write(file_data_dec)
+        total_size += 4  # RKFW CRC
 
         # write the boot image to a file
         self.stream.seek(boot_img_base)
+        self.stream.seek(total_size - 4, SEEK_CUR)
+        rk_boot_crc = self.stream.read_uint32()
+        self.stream.seek(boot_img_base)
         with open(join("test", "boot.bin"), "wb") as f:
-            f.write(self.stream.read(total_size + 4))
+            f.write(self.stream.read(total_size))
 
-        if RKFW_Type(fw_hdr.Type) == RKFW_Type.RKAF:
-            rkaf_base = self.stream.tell()
-            rkaf_hdr = self.stream.read_struct(RKAF_Header)
-            for single in rkaf_hdr.UpdFiles:
-                #print(bytes(single.Name).rstrip(b"\x00"))
-                file_name = str(bytes(single.FileName).rstrip(b"\x00"), "utf8")
-                if len(file_name) > 0:
-                    print(file_name)
-                    self.stream.seek(rkaf_base + single.Offset)
-                    file_data = self.stream.read(single.OrigFSize)
-                    if file_name == "parameter":
-                        file_data = file_data[sizeof(PARM_File):-4]
-                        parm_crc = unpack("<I", file_data[-4:])[0]
-                    if file_name not in ["RESERVED"]:
-                        with open(join("test", file_name), "wb") as f:
-                            f.write(file_data)
-        elif RKFW_Type(fw_hdr.Type) == RKFW_Type.UPDATE:
-            pass
-        else:
-            raise Exception("Invalid RKFW type")
+    def read_rkaf(self) -> None:
+        rkaf_base = self.stream.tell()
+        rkaf_hdr = self.stream.read_struct(RKAF_Header)
+        for single in rkaf_hdr.UpdFiles:
+            file_name = str(bytes(single.FileName).rstrip(b"\x00"), "utf8")
+            if len(file_name) > 0:
+                print(file_name)
+                self.stream.seek(rkaf_base + single.Offset)
+                file_data = self.stream.read(single.OrigFSize)
+                if file_name == "parameter":
+                    file_data = file_data[sizeof(PARM_File):-4]
+                    parm_crc = unpack("<I", file_data[-4:])[0]
+                if file_name not in ["RESERVED"]:
+                    with open(join("test", file_name), "wb") as f:
+                        f.write(file_data)
 
     def reset(self) -> None:
         self.stream = None
