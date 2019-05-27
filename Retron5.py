@@ -39,6 +39,7 @@ PUBLIC_KEY_FILE = "pub_key.pem"
 PRIVATE_KEY_FILE = "prv_key.pem"
 
 # I/O vars
+BUFF_SIZE = 16384
 BLOCK_SIZE = 8192
 
 # magic
@@ -46,6 +47,7 @@ SHARED_MAGIC = unhexlify("dec03713")
 REQUEST_MAGIC = unhexlify("56505251")
 RKFW_MAGIC = b"RKFW"
 RKFW_BOOT_MAGIC = b"BOOT"
+ANDROID_BOOT_MAGIC = b"ANDROID!"
 
 # secrets
 # secret used to decrypt system update files (not app updates)
@@ -186,6 +188,28 @@ class KRNL_File(Structure):
         # CRC
     ]
 
+class AndroidBoot_Header(Structure):
+    _pack_ = True
+    _fields_ = [
+        ("Magic", c_byte * 8),
+        ("KernelSize", c_uint32),
+        ("KernelAddr", c_uint32),
+        ("RamdiskSize", c_uint32),
+        ("RamdiskAddr", c_uint32),
+        ("SecondFSize", c_uint32),
+        ("SecondFAddr", c_uint32),
+        ("TagsAddr", c_uint32),
+        ("PageSize", c_uint32),
+        ("Unk0", c_uint32),
+        ("Unk1", c_uint32),
+        ("Name", c_byte * 16),
+        ("CmdLine", c_byte * 512),
+        ("SHADigest", c_ubyte * 20),
+        ("Unk2", c_uint32),
+        ("Unk3", c_uint32),
+        ("Unk4", c_uint32),
+    ]
+
 # functions
 def hexlify(b: (bytes, bytearray)) -> str:
     return _hexlify(b).decode("utf8")
@@ -272,10 +296,14 @@ class RKFW(object):
         assert fw_hdr.ChipID == RKFW_ChipID.RK3066, "Invalid RockChip ID"
         self.package_build_datetime = datetime(fw_hdr.Year, fw_hdr.Month, fw_hdr.Day, fw_hdr.Hour, fw_hdr.Minute, fw_hdr.Second)
 
-        self.read_boot()
+        #self.read_boot()
 
         if RKFW_Type(fw_hdr.Type) == RKFW_Type.RKAF:
             self.read_rkaf()
+
+            self.stream.seek(-36, SEEK_END)
+            rkaf_crc = self.stream.read_uint32()  # the RKCRC of the image
+            rkaf_md5 = unhexlify(self.stream.read(32))  # stored as hex?
         elif RKFW_Type(fw_hdr.Type) == RKFW_Type.UPDATE:
             pass
         else:
@@ -284,6 +312,7 @@ class RKFW(object):
     def read_boot(self) -> None:
         boot_img_base = self.stream.tell()
         rk_boot_hdr = self.stream.read_struct(RKBoot_Header)
+
         assert bytes(rk_boot_hdr.Magic) == RKFW_BOOT_MAGIC, "Invalid RockChip boot magic"
         assert rk_boot_hdr.ChipID == RKFW_ChipID.RK3066, "Invalid RockChip ID"
         self.boot_build_datetime = datetime(rk_boot_hdr.Year, rk_boot_hdr.Month, rk_boot_hdr.Day, rk_boot_hdr.Hour, rk_boot_hdr.Minute, rk_boot_hdr.Second)
@@ -313,30 +342,26 @@ class RKFW(object):
         self.stream.seek(boot_img_base)
         self.stream.seek(total_size - 4, SEEK_CUR)
         rk_boot_crc = self.stream.read_uint32()
-        self.stream.seek(boot_img_base)
-        with open(join("test", "boot.bin"), "wb") as f:
-            f.write(self.stream.read(total_size))
 
     def read_rkaf(self) -> None:
         rkaf_base = self.stream.tell()
         rkaf_hdr = self.stream.read_struct(RKAF_Header)
         for single in rkaf_hdr.UpdFiles:
             file_name = str(bytes(single.FileName).rstrip(b"\x00"), "utf8")
-            if len(file_name) > 0:
-                print(file_name)
+            if single.ImgFSize > 0:
                 self.stream.seek(rkaf_base + single.Offset)
-                file_data = self.stream.read(single.OrigFSize)
-                if file_name == "parameter":
-                    file_data = file_data[sizeof(PARM_File):-4]
-                    parm_crc = unpack("<I", file_data[-4:])[0]
-                if file_name not in ["RESERVED"]:
-                    with open(join("test", file_name), "wb") as f:
-                        f.write(file_data)
+                with open(join("test", file_name), "wb") as f:
+                    read_bytes = 0
+                    while read_bytes < single.OrigFSize:
+                        read_size = (single.OrigFSize - read_bytes) if (single.OrigFSize - read_bytes) < BUFF_SIZE else BUFF_SIZE
+                        temp = self.stream.read(read_size)
+                        f.write(temp)
+                        read_bytes += len(temp)
 
     def reset(self) -> None:
         self.stream = None
-        self.package_build_datetime: datetime = None
-        self.boot_build_datetime: datetime = None
+        self.package_build_datetime = None
+        self.boot_build_datetime = None
 
 class UpdateRequestFile(object):
     dna = None
@@ -475,7 +500,7 @@ class SystemUpdateFile(object):
                 if magic != SHARED_MAGIC:
                     raise Exception("Invalid update magic")
                 signature = record_dec[-RSA_PUB_BYTES:]
-                assert self.verifier.verify(SHA1.new(record_dec[:-RSA_PUB_BYTES]), signature), "Invalid signature"
+                #assert self.verifier.verify(SHA1.new(record_dec[:-RSA_PUB_BYTES]), signature), "Invalid signature"
                 sio.seek(16)
                 for x in range(file_count):
                     file = UpdateFile()
@@ -539,7 +564,7 @@ class SystemUpdateFile(object):
                     # output to file
                     f.write(dec_buff)
                     read += len(enc_buff)
-                assert self.verifier.verify(hasher, single.signature), "Invalid signature"
+                #assert self.verifier.verify(hasher, single.signature), "Invalid signature"
             # rename the .bz2 files because they're already decompressed
             if single.name.endswith(".bz2"):  # .tar.bz2 files
                 if DEBUG:
@@ -584,7 +609,7 @@ if __name__ == "__main__":
         mkdir(args.out_dir)
 
     # create or read update request
-    update_request = UpdateRequestFile()
+    update_request = UpdateRequestFile("input/retron-update-request.dat")
 
     # parse and dump system update file
     """
@@ -597,5 +622,9 @@ if __name__ == "__main__":
                 print("Extracting files...")
                 su.extract_files()
     """
-    with RKFW("output/update.img") as fw:
-        pass
+    #with RKFW("input/retron-update.bin") as fw:
+    #    pass
+    with open("input/retron-update.bin", "rb") as f:
+        with SystemUpdateFile(f) as suf:
+            suf.list_files()
+            suf.extract_files("test")
